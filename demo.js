@@ -8,12 +8,20 @@ function DemoDevice(onMessage) {
     'Fuzz Factory','Surf Spring','Big Room Lead','Swell Machine'];
   const SCN = [['Clean','Crunch','Rhythm','Lead','Ambient','Swell','Solo','Outro'],
     ['Verse','Chorus','Bridge','Solo','Intro','Breakdown','Tag','Pad']];
-  const state = { preset: 0, scene: 0, tempo: 120, tuner: false, blocks: {} };
+  const state = { preset: 0, scene: 0, tempo: 120, tuner: false, blocks: {}, bulk: {} };
+  function bulkVals(id) {
+    if (state.bulk[id]) return state.bulk[id];
+    const per = id === ID.DISTORT1 || id === ID.DISTORT2 ? 135 : 50, vals = [];
+    for (let i = 0; i < per * 4; i++) vals.push((i * 2731 + id * 97) % 65535);
+    if (per === 135) [[148, 46267, 26214, 27852, 45415, 27721], [174, 50000, 30000, 25000, 47000, 26000], [149, 52000, 28000, 30000, 44000, 30000], [148, 40000, 32767, 32767, 32767, 20000]]
+      .forEach((row, c) => row.forEach((v, k) => { vals[c * per + k] = v; }));
+    return (state.bulk[id] = vals);
+  }
   const PRESET_BLOCKS = [ID.COMP1, ID.FUZZ1, ID.DISTORT1, ID.CAB1, ID.CHORUS1, ID.DELAY1, ID.DELAY2,
     ID.REVERB1, ID.PITCH1, ID.PHASER1, ID.WAH1, ID.VOLUME1];
   const presetName = n => n < NAMES.length * 4 ? NAMES[n % NAMES.length] + (n >= NAMES.length ? ' ' + (1 + Math.floor(n / NAMES.length)) : '') : 'Preset ' + n;
   function loadPreset(n) {
-    state.preset = n; state.scene = 0; state.blocks = {};
+    state.preset = n; state.scene = 0; state.blocks = {}; state.bulk = {};
     PRESET_BLOCKS.forEach((id, i) => {
       const chs = id === ID.CAB1 ? 4 : (i % 3 === 0 ? 2 : 4);
       state.blocks[id] = { bypassed: ((n + i) % 3) === 0 && id !== ID.DISTORT1 && id !== ID.CAB1, channel: (n + i) % chs, channels: chs };
@@ -77,16 +85,25 @@ function DemoDevice(onMessage) {
         }
         break;
       }
-      case 0x1F: { // simulated bulk-read burst (shape per community RE; values are fake)
+      case 0x1F: { // simulated bulk-read burst (shape as seen on a real Axe-Fx III fw 18.03; values are fake)
         const id = from14(p[0], p[1]); if (!state.blocks[id]) { reply(0x64, [0x1F, 0x00]); break; }
-        const per = 50, vals = []; for (let i = 0; i < per * 4; i++) vals.push((i * 2731 + id * 97) % 65535);
+        const vals = bulkVals(id);
         const tri = v => [v & 0x7F, (v >> 7) & 0x7F, (v >> 14) & 0x03];
         setTimeout(() => {
-          onMessage(build(0x74, [...lsb14(id), ...lsb14(per * 4), 0]));
-          onMessage(build(0x75, [0, 0, ...vals.slice(0, 128).flatMap(tri)]));
-          onMessage(build(0x75, [1, 0, ...vals.slice(128).flatMap(tri)]));
+          onMessage(build(0x74, [...lsb14(id), ...lsb14(vals.length), 0]));
+          for (let o = 0; o < vals.length; o += 128) onMessage(build(0x75, [o / 128, 0, ...vals.slice(o, o + 128).flatMap(tri)]));
           onMessage(build(0x76, []));
         }, 15);
+        break;
+      }
+      case 0x01: { // simulated parameter SET (sub 52 00, float32 normalized at payload pos 6..10) on the active channel
+        if (p[0] !== 0x52) break;
+        const id = from14(p[2], p[3]), pid = from14(p[4], p[5]); const b = state.blocks[id]; if (!b) break;
+        const u = (p[6] | (p[7] << 7) | (p[8] << 14) | (p[9] << 21) | (p[10] << 28)) >>> 0;
+        const f = new Float32Array(new Uint32Array([u]).buffer)[0];
+        const vals = bulkVals(id), per = vals.length / 4;
+        vals[b.channel * per + pid] = Math.round(Math.max(0, Math.min(1, f)) * 65534);
+        reply(0x01, p.slice(0, 11).concat(Array(40).fill(0))); // stand-in for the ~60-byte value echo
         break;
       }
       case CMD.FIRMWARE: reply(CMD.FIRMWARE, [32, 0, 0, 0, 0]); break;

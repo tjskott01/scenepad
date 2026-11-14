@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.3.0';
 (() => {
   const $ = id => document.getElementById(id);
   const hex = a => Array.from(a).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
@@ -53,12 +53,14 @@ const APP_VERSION = '1.1.0';
         break;
       case 'scene': if (m.scene !== S.scene) { S.scene = m.scene; renderScenes(); } break;
       case 'sceneName': if (m.scene < 8) { S.sceneNames[m.scene] = m.name; renderScenes(); } break;
-      case 'bypass': { const b = getBlock(m.id); b.bypassed = m.bypassed; renderBlocks(); break; }
-      case 'channel': { const b = getBlock(m.id); b.channel = m.channel; renderBlocks(); break; }
+      // A GET reply for a block that is not in the preset still answers (value 0) on fw 18.03, so the
+      // status dump is the only source of truth for presence: ignore replies for blocks it didn't list.
+      case 'bypass': { if (S.dumpSeen && !S.blocks.has(m.id)) break; const b = getBlock(m.id); b.bypassed = m.bypassed; renderBlocks(); break; }
+      case 'channel': { if (S.dumpSeen && !S.blocks.has(m.id)) break; const b = getBlock(m.id); b.channel = m.channel; renderBlocks(); break; }
       case 'dump': {
         S.blocks = new Map(); S.dumpSeen = true;
         for (const b of m.blocks) if (P.blockInfo(b.id)) S.blocks.set(b.id, b);
-        renderBlocks(); break;
+        S.allBlocks = m.blocks; renderBlocks(); ampBtnState(); break;
       }
       case 'tempo': if (m.bpm >= 20 && m.bpm <= 300) { S.tempo = m.bpm; $('bpm').textContent = m.bpm; } break;
       case 'beat': flashLed(); break;
@@ -98,7 +100,7 @@ const APP_VERSION = '1.1.0';
   function changePreset(n) {
     n = Math.max(0, Math.min(1023, n | 0));
     if (S.mode === 'off') return toast('Connect MIDI or start Demo first');
-    for (const m of P.msg.presetChange(n, midiCh())) send(m);
+    for (const m of P.msg.presetChange(n, midiCh(), +$('bankSel').value || 0)) send(m);
     S.preset = n; S.presetName = names[n] || '…'; renderPreset();
     setTimeout(() => { queryCurrent(); refreshPresetDetails(); }, 120);
   }
@@ -178,6 +180,97 @@ const APP_VERSION = '1.1.0';
   }
   function setStatus(text, cls) { $('connText').textContent = text; $('dot').className = 'dot ' + (cls || ''); }
 
+  // ---------- Amp panel (read-only, fn 0x1F bulk read) ----------
+  const AMP_KNOBS = [['Gain', 1], ['Bass', 2], ['Mid', 3], ['Treble', 4], ['Master', 5]];
+  let ampId = P.ID.DISTORT1, ampBusy = false;
+  const ampName = v => (typeof AMP_TYPES !== 'undefined' && AMP_TYPES[v]) ? AMP_TYPES[v] : 'Type #' + v;
+  const knob = v => v == null || v > 65534 ? null : v / 65534 * 10;
+  function ampBtnState() {
+    const amps = (S.allBlocks || []).filter(b => b.id === P.ID.DISTORT1 || b.id === P.ID.DISTORT2);
+    $('ampBtn').classList.toggle('hidden', S.mode === 'off');
+    $('ampSel').innerHTML = '';
+    for (const id of (amps.length ? amps.map(b => b.id) : [P.ID.DISTORT1])) {
+      const o = document.createElement('option'); o.value = id; o.textContent = P.blockName(id); $('ampSel').appendChild(o);
+    }
+    if ([...$('ampSel').options].some(o => +o.value === ampId)) $('ampSel').value = ampId; else ampId = +$('ampSel').value;
+  }
+  // Bulk read helper (shared with diagnostics). Resolves {bulk, frames, nack}.
+  function readBulk(id, timeout = 2500) {
+    return new Promise(resolve => {
+      const frames = []; let done = false;
+      const h = d => { if (d[0] === 0xF0 && d[3] === 0x74 && d[4] === 0x10 && [0x74, 0x75, 0x76, 0x64].includes(d[5])) { frames.push(d); if (d[5] === 0x76 || d[5] === 0x64) fin(); } };
+      const fin = () => { if (done) return; done = true; rawListeners.delete(h); clearTimeout(t); resolve({ frames, bulk: P.parseBulk(frames), nack: frames.some(d => d[5] === 0x64) }); };
+      rawListeners.add(h); const t = setTimeout(fin, timeout);
+      send(P.msg.bulkRead(id));
+    });
+  }
+  // Demo mode edits the simulator freely; real hardware needs a test-7 pass recorded in MIDI mode.
+  const writeOK = () => S.mode === 'demo' ? { demo: true } : ((w => w && w.mode === 'midi' ? w : null)(store.get('writeOK', null)));
+  let amp = null;            // last read: {id, ch, stride, values, bypassed}
+  const ampOrig = {};        // `${id}:${ch}` -> {pid: wireValue} captured before the first edit
+  async function readAmp() {
+    if (S.mode === 'off') return toast('Connect MIDI or start Demo first');
+    if (ampBusy) return; ampBusy = true; S.pausePoll = true;
+    $('ampStatus').textContent = 'Reading…';
+    send(P.msg.statusDump()); await new Promise(r => setTimeout(r, 120));
+    const { bulk, nack } = await readBulk(ampId);
+    ampBusy = false; S.pausePoll = false;
+    if (!bulk || !bulk.values.length || !Number.isInteger(bulk.stride)) {
+      amp = null; $('ampBody').innerHTML = '';
+      $('ampStatus').textContent = nack ? 'The unit rejected the read (block not in this preset?).' : 'No reply from the unit.'; return;
+    }
+    const st = (S.allBlocks || []).find(b => b.id === bulk.blockId);
+    amp = { id: bulk.blockId, ch: st ? st.channel : 0, chans: st && st.channels ? Math.min(4, st.channels) : 4, stride: bulk.stride, values: bulk.values, bypassed: st && st.bypassed };
+    renderAmp();
+    $('ampStatus').textContent = `Read ${new Date().toLocaleTimeString()} · ${bulk.values.length} values`;
+  }
+  function renderAmp() {
+    if (!amp) return;
+    const { ch, chans } = amp, val = (c, pid) => amp.values[c * amp.stride + pid];
+    const ok = writeOK(), key = `${amp.id}:${ch}`, edited = !!ampOrig[key];
+    $('ampMode').textContent = ok ? 'experimental editor' : 'read-only';
+    let html = `<div class="ampType"><small>${P.blockName(amp.id)} · Channel ${'ABCD'[ch]}</small><b>${ampName(val(ch, 0))}</b><span class="dim">type #${val(ch, 0)}${amp.bypassed ? ' · BYPASSED' : ''}</span></div>`;
+    html += ok ? `<div class="expBanner">EXPERIMENTAL editing · changes channel ${'ABCD'[ch]} live, not saved to the preset until you save on the unit</div>`
+               : `<div class="lockBanner">Editing locked. Run Diagnostics <b>test 7</b> once to verify writes on this unit.<button class="chip" id="ampGoTest">Open test 7</button></div>`;
+    html += '<div class="knobs">';
+    for (const [k, pid] of AMP_KNOBS) {
+      const x = knob(val(ch, pid));
+      html += `<div class="knob"><span class="kl">${k}</span><input type="range" min="0" max="10" step="0.01" value="${x == null ? 0 : x.toFixed(2)}" data-pid="${pid}" ${ok ? '' : 'disabled'}><span class="kv" id="kv${pid}">${x == null ? '–' : x.toFixed(2)}</span></div>`;
+    }
+    html += '</div>';
+    if (ok) html += `<div class="row2"><button class="chip" id="ampRestore" ${edited ? '' : 'disabled'}>↺ Restore original values</button></div>`;
+    html += '<table class="chTable"><tr><th></th>' + [...Array(chans)].map((_, c) => `<th class="${c === ch ? 'cur' : ''}">${'ABCD'[c]}</th>`).join('') + '</tr>';
+    html += '<tr><td>Type</td>' + [...Array(chans)].map((_, c) => `<td class="${c === ch ? 'cur' : ''}">${ampName(val(c, 0))}</td>`).join('') + '</tr>';
+    for (const [k, pid] of AMP_KNOBS) html += `<tr><td>${k}</td>` + [...Array(chans)].map((_, c) => { const x = knob(val(c, pid)); return `<td class="${c === ch ? 'cur' : ''}">${x == null ? '–' : x.toFixed(2)}</td>`; }).join('') + '</tr>';
+    html += '</table>';
+    $('ampBody').innerHTML = html;
+    const go = $('ampGoTest'); if (go) go.onclick = () => { $('ampPanel').classList.add('hidden'); window.ScenePadDiag && window.ScenePadDiag.open(); };
+    $('ampBody').querySelectorAll('input[type=range]').forEach(inp => {
+      inp.addEventListener('input', () => onSlide(+inp.dataset.pid, +inp.value));
+      inp.addEventListener('change', () => { clearTimeout(rereadT); rereadT = setTimeout(readAmp, 500); });
+    });
+    const rb = $('ampRestore'); if (rb) rb.onclick = restoreAmp;
+  }
+  let slideT = null, slidePending = null, rereadT = null, lastSlide = 0;
+  function onSlide(pid, v) {
+    if (!amp || !writeOK()) return;
+    const key = `${amp.id}:${amp.ch}`;
+    if (!ampOrig[key]) { ampOrig[key] = {}; for (const [, p] of AMP_KNOBS) ampOrig[key][p] = amp.values[amp.ch * amp.stride + p]; }
+    $('kv' + pid).textContent = v.toFixed(2);
+    slidePending = [pid, v];
+    const flush = () => { if (!slidePending) return; const [p, x] = slidePending; slidePending = null; lastSlide = performance.now(); send(P.setParamContinuous(amp.id, p, x / 10)); amp.values[amp.ch * amp.stride + p] = Math.round(x / 10 * 65534); };
+    clearTimeout(slideT);
+    if (performance.now() - lastSlide > 60) flush(); else slideT = setTimeout(flush, 60);
+    const rb = $('ampRestore'); if (rb) rb.disabled = false;
+  }
+  async function restoreAmp() {
+    if (!amp) return; const key = `${amp.id}:${amp.ch}`, orig = ampOrig[key]; if (!orig) return;
+    for (const [p, w] of Object.entries(orig)) { send(P.setParamContinuous(amp.id, +p, w / 65534)); await new Promise(r => setTimeout(r, 30)); }
+    delete ampOrig[key];
+    toast('Original values sent. Re-reading…');
+    setTimeout(readAmp, 400);
+  }
+
   // ---------- preset picker ----------
   let page = 0; const PER = 20; const pickerWaiting = new Set();
   function openPicker() { page = Math.floor((S.preset || 0) / PER); $('picker').classList.remove('hidden'); renderPicker(true); }
@@ -222,7 +315,7 @@ const APP_VERSION = '1.1.0';
     if (input) input.onmidimessage = e => receive(e.data);
     S.mode = 'midi'; S.dumpSeen = false; S.blocks = new Map();
     setStatus(output.name, 'ok'); $('settings').classList.add('hidden');
-    renderBlocks(); fullRefresh(); startPolling(); wake();
+    renderBlocks(); ampBtnState(); fullRefresh(); startPolling(); wake();
     if (!input) toast('No MIDI input: commands work, but the screen cannot follow the unit.', 4000);
   }
   function startDemo() {
@@ -230,11 +323,11 @@ const APP_VERSION = '1.1.0';
     demo = new DemoDevice(d => receive(d));
     S.mode = 'demo'; S.dumpSeen = false; S.blocks = new Map(); S.preset = null;
     setStatus('Demo mode', 'demo'); $('demoBtn').classList.add('active');
-    renderBlocks(); fullRefresh(); startPolling(); wake();
+    ampBtnState(); renderBlocks(); fullRefresh(); startPolling(); wake();
   }
   function stopDemo() { if (demo) { demo.close(); demo = null; } $('demoBtn').classList.remove('active'); }
   function toggleDemo() {
-    if (S.mode === 'demo') { stopDemo(); closeTuner(false); S.mode = 'off'; S.preset = null; S.sceneNames = Array(8).fill(''); S.dumpSeen = false; S.blocks = new Map(); S.tempo = null; $('bpm').textContent = '---'; setStatus('Not connected', ''); renderScenes(); renderBlocks(); }
+    if (S.mode === 'demo') { stopDemo(); closeTuner(false); S.mode = 'off'; S.preset = null; S.sceneNames = Array(8).fill(''); S.dumpSeen = false; S.blocks = new Map(); S.tempo = null; $('bpm').textContent = '---'; setStatus('Not connected', ''); S.allBlocks = null; ampBtnState(); renderScenes(); renderBlocks(); }
     else startDemo();
   }
 
@@ -247,6 +340,7 @@ const APP_VERSION = '1.1.0';
   function init() {
     for (let c = 0; c < 16; c++) { const o = document.createElement('option'); o.value = c; o.textContent = 'Channel ' + (c + 1); $('chSel').appendChild(o); }
     $('chSel').value = store.get('ch', 0);
+    $('bankSel').value = store.get('bankcc', 0); $('bankSel').onchange = () => store.set('bankcc', +$('bankSel').value);
     $('midiSupport').textContent = navigator.requestMIDIAccess
       ? (window.isSecureContext ? 'Web MIDI available. Plug in the cable, then tap Connect MIDI and allow MIDI device access.' : 'Web MIDI needs HTTPS.')
       : 'This browser has no Web MIDI support. Use Chrome (or Brave) on Android. Demo mode still works.';
@@ -257,6 +351,9 @@ const APP_VERSION = '1.1.0';
     $('prevBtn').onclick = () => changePreset((S.preset ?? 1) - 1);
     $('nextBtn').onclick = () => changePreset((S.preset ?? -1) + 1);
     $('presetBox').onclick = openPicker;
+    $('ampBtn').onclick = () => { $('ampPanel').classList.remove('hidden'); ampBtnState(); readAmp(); };
+    $('ampRefresh').onclick = readAmp;
+    $('ampSel').onchange = () => { ampId = +$('ampSel').value; readAmp(); };
     $('pgPrev').onclick = () => { page = Math.max(0, page - 1); renderPicker(true); };
     $('pgNext').onclick = () => { page = Math.min(Math.floor(1023 / PER), page + 1); renderPicker(true); };
     $('goBtn').onclick = () => { const v = $('presetInput').value; if (v !== '') { $('picker').classList.add('hidden'); changePreset(+v); } };
@@ -276,7 +373,8 @@ const APP_VERSION = '1.1.0';
     }
   }
   window.ScenePad = { S, send, receive, startDemo, connectMidi, requestMidi, VERSION: APP_VERSION,
-    getIO: () => ({ access, input, output, mode: S.mode }),
+    getIO: () => ({ access, input, output, mode: S.mode }), readBulk, store,
+    setWriteOK: v => { store.set('writeOK', v); renderAmp(); },
     onRaw: fn => rawListeners.add(fn), offRaw: fn => rawListeners.delete(fn) };
   init();
 })();

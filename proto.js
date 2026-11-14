@@ -34,6 +34,9 @@ const P = (() => {
   for (let i = 1; i <= 4; i++) ID['MULTIPLEXER' + i] = n++;
   for (let i = 1; i <= 4; i++) ID['IRPLAYER' + i] = n++;
   ID.FOOTCONTROLLER = n++; ID.PRESET_FC = n++;
+  // Beyond the rev 1.4 appendix. 201 shows up in every preset's status dump on fw 18.03 (1 channel, engaged);
+  // unidentified (mTroll lists it as ID_UNKNOWN_THING). 202/203 per mTroll (sean-e/mTroll AxeFx3EffectIds.h).
+  ID.UNKNOWN201 = n++; ID.DYNDIST1 = n++; ID.DYNDIST2 = n++;
 
   // Friendly labels for blocks a player would switch. Everything else is hidden.
   const LABEL = { COMP:'Comp', GRAPHEQ:'GEQ', PARAEQ:'PEQ', DISTORT:'Amp', CAB:'Cab', REVERB:'Reverb',
@@ -42,11 +45,12 @@ const P = (() => {
     FILTER:'Filter', FUZZ:'Drive', ENHANCER:'Enhancer', MIXER:'Mixer', SYNTH:'Synth', VOCODER:'Vocoder',
     MEGATAP:'Megatap', CROSSOVER:'Xover', GATE:'Gate', RINGMOD:'Ring Mod', MULTICOMP:'MB Comp',
     TENTAP:'Ten-Tap', RESONATOR:'Resonator', LOOPER:'Looper', PLEX:'Plex Dly', IRPLAYER:'IR Player',
-    MULTIPLEXER:'Mux' };
+    MULTIPLEXER:'Mux', DYNDIST:'Dyn Dist' };
   const ID_NAME = {}; for (const [k, v] of Object.entries(ID)) ID_NAME[v] = k;
   function blockInfo(id) {
     const name = ID_NAME[id]; if (!name) return null;
-    const m = name.match(/^([A-Z]+?)(\d)?$/); const base = m[1], inst = m[2];
+    const m = /^([A-Z_]+?)(\d)?$/.exec(name); if (!m) return null;
+    const base = m[1], inst = m[2];
     if (!LABEL[base]) return null;
     return { id, key: name, label: LABEL[base] + (inst ? ' ' + inst : ''), base, inst: +inst || 1 };
   }
@@ -72,8 +76,9 @@ const P = (() => {
     setTempo: bpm => build(CMD.TEMPO, lsb14(Math.round(bpm))),
     getTempo: () => build(CMD.TEMPO, [Q, Q]),
     getFirmware: () => build(CMD.FIRMWARE),
+    bulkRead: id => build(0x1F, lsb14(id)),
     // Standard MIDI: bank select CC0 (value = preset / 128) then Program Change (preset % 128).
-    presetChange: (num, ch = 0) => [[0xB0 | ch, 0x00, (num >> 7) & 0x7F], [0xC0 | ch, num & 0x7F]],
+    presetChange: (num, ch = 0, bankCC = 0) => [[0xB0 | ch, bankCC, (num >> 7) & 0x7F], [0xC0 | ch, num & 0x7F]],
   };
 
   const ascii = arr => String.fromCharCode(...arr.filter(c => c >= 0x20 && c < 0x7F)).replace(/\s+$/, '');
@@ -120,7 +125,40 @@ const P = (() => {
     }
   }
 
+  // Human-readable name for any ID, never throws.
+  function blockName(id) {
+    const b = blockInfo(id); if (b) return b.label;
+    const n = ID_NAME[id];
+    if (n === 'UNKNOWN201') return 'Unknown block #201';
+    const SYS = { CONTROL: 'Controllers', TUNER: 'Tuner', IRCAPTURE: 'IR Capture', MIDIBLOCK: 'Scene MIDI', FOOTCONTROLLER: 'Foot Controller', PRESET_FC: 'Preset FC' };
+    if (SYS[n]) return SYS[n];
+    const io = /^(INPUT|OUTPUT|TONEMATCH|RTA|FBSEND|FBRETURN)(\d)$/.exec(n || '');
+    if (io) return ({ INPUT: 'Input', OUTPUT: 'Output', TONEMATCH: 'Tone Match', RTA: 'RTA', FBSEND: 'Send', FBRETURN: 'Return' })[io[1]] + ' ' + io[2];
+    return n ? n.replace(/_/g, ' ') : `Unknown block #${id}`;
+  }
+
+  // fn 0x1F block bulk read (community reverse-engineered, read-only poll). Reply: 0x74 head
+  // [id:14][itemCount:14] + 0x75 body frames (3-septet 16-bit values from byte 8) + 0x76 end.
+  // Values are channel-blocked: index = channel * (itemCount / 4) + paramId. Verified on Axe-Fx III fw 18.03.
+  function parseBulk(frames) {
+    const head = frames.find(d => d[5] === 0x74); if (!head) return null;
+    const values = [];
+    for (const d of frames) if (d[5] === 0x75) for (let i = 8; i + 3 <= d.length - 2; i += 3) values.push(d[i] | (d[i + 1] << 7) | (d[i + 2] << 14));
+    const itemCount = from14(head[8], head[9]);
+    return { blockId: from14(head[6], head[7]), itemCount, stride: itemCount / 4, values };
+  }
+
+  // fn 0x01 PARAMETER SET, sub-action 52 00 (continuous knob), value = IEEE-754 float32 of the
+  // normalized 0..1 knob position, sent as 5 LSB-first septets, then 4 zero bytes. Community RE (fractal-midi);
+  // byte layout matches a public Axe-Fx III AxeEdit capture. Gated in the UI behind diagnostics test 7.
+  const _f = new Float32Array(1), _u = new Uint32Array(_f.buffer);
+  function float5(v) { _f[0] = v; const x = _u[0]; return [x & 0x7F, (x >>> 7) & 0x7F, (x >>> 14) & 0x7F, (x >>> 21) & 0x7F, (x >>> 28) & 0x7F]; }
+  function setParamContinuous(effectId, paramId, normalized) {
+    const n = Math.max(0, Math.min(1, normalized));
+    return build(0x01, [0x52, 0x00, ...lsb14(effectId), ...lsb14(paramId), ...float5(n), 0, 0, 0, 0]);
+  }
+
   const NOTES = ['A','A#','B','C','C#','D','D#','E','F','F#','G','G#'];
-  return { HDR, CMD, ID, ID_NAME, checksum, build, lsb14, from14, msg, parse, blockInfo, DEFAULT_BLOCKS, NOTES };
+  return { HDR, CMD, ID, ID_NAME, checksum, build, lsb14, from14, msg, parse, blockInfo, blockName, parseBulk, setParamContinuous, float5, DEFAULT_BLOCKS, NOTES };
 })();
 if (typeof module !== 'undefined') module.exports = P;

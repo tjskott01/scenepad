@@ -100,3 +100,24 @@ pre#log{font-size:11px;max-height:200px;overflow:auto;background:#0a0b0d;padding
 .v.pass{background:var(--on);color:#00140a}.v.fail{background:var(--bad);color:#200}.v.noreply{background:var(--warn);color:#1a1400}.v.run{background:var(--blue);color:#001}.v.info{background:#555;color:#fff}
 .row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px}
 pre.tlog{flex:1;min-height:220px;margin:0;font:600 12px/1.45 ui-monospace,Menlo,Consolas,monospace;background:#07080a;color:#e6e9ee;padding:10px;border-radius:10px;overflow:auto;white-space:pre-wrap;word-break:break-all;user-select:text;-webkit-user-select:text}
+
+.dim{color:var(--dim)}.small{font-size:13px}
+#ampSel{flex:1}
+.ampType{display:flex;flex-direction:column;gap:2px;padding:12px;background:var(--panel2);border-radius:12px}
+.ampType small{color:var(--acc2);font-weight:800;letter-spacing:.06em}
+.ampType b{font-size:26px;line-height:1.15}
+.knobs{display:flex;flex-direction:column;gap:10px;margin-top:12px}
+.knob{display:grid;grid-template-columns:72px 1fr 56px;min-height:44px;align-items:center;gap:10px;font-weight:900;font-size:18px}
+.kbar{height:16px;background:#0b0d10;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.kbar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2))}
+.kv{text-align:right;font-variant-numeric:tabular-nums}
+.chTable{width:100%;border-collapse:collapse;margin-top:14px;font-size:13px;font-weight:700}
+.chTable th,.chTable td{padding:6px 4px;border-bottom:1px solid var(--line);text-align:center}
+.chTable td:first-child{text-align:left;color:var(--dim)}
+.chTable .cur{background:#2a1a08;color:var(--acc2)}
+
+.knob input[type=range]{width:100%;height:36px;accent-color:var(--acc)}
+.knob input[type=range]:disabled{opacity:.55}
+.expBanner{margin-top:10px;padding:10px;border-radius:10px;background:#3a2408;border:1px solid var(--acc);color:var(--acc2);font-weight:900;font-size:14px}
+.lockBanner{margin-top:10px;padding:10px;border-radius:10px;background:#20242b;border:1px dashed var(--line);font-weight:800;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+#ampRestore{flex:1}
