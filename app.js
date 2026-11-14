@@ -1,4 +1,5 @@
 'use strict';
+const APP_VERSION = '1.1.0';
 (() => {
   const $ = id => document.getElementById(id);
   const hex = a => Array.from(a).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
@@ -33,7 +34,9 @@
     const now = performance.now(); nextAt = Math.max(now, nextAt + 6);
     try { output.send(d, nextAt); log('→', d); return true; } catch (e) { log('!', [0]); toast('Send failed: ' + e.message); return false; }
   }
+  const rawListeners = new Set();
   function receive(d) {
+    for (const fn of rawListeners) { try { fn(Array.from(d)); } catch (e) { console.warn(e); } }
     log('←', d);
     const m = P.parse(d); if (!m) return;
     switch (m.type) {
@@ -83,7 +86,7 @@
   function startPolling() {
     clearInterval(pollT);
     pollT = setInterval(() => {
-      if (S.mode === 'off' || !$('pollChk').checked || document.hidden) return;
+      if (S.mode === 'off' || S.pausePoll || !$('pollChk').checked || document.hidden) return;
       tick++;
       queryCurrent();
       if (tick % 3 === 0 && !S.tuner) { send(P.msg.statusDump()); send(P.msg.getTempo()); }
@@ -122,6 +125,7 @@
     if (sendCmd) send(P.msg.tuner(false));
   }
   function onTuner(m) {
+    if (S.diag) return; // diagnostics screen handles tuner data itself
     if (!S.tuner) { openTuner(false); S.tunerAuto = true; } // tuner engaged on the unit itself
     S.lastTune = performance.now();
     const note = P.NOTES[m.note] ?? '?', ok = Math.abs(m.cents) <= 3;
@@ -271,6 +275,8 @@
       navigator.permissions.query({ name: 'midi', sysex: true }).then(r => { if (r.state === 'granted') requestMidi().then(ok => ok && store.get('out') && access.outputs.get(store.get('out')) && connectMidi()); }).catch(() => {});
     }
   }
-  window.ScenePad = { S, send, receive, startDemo }; // for debugging from DevTools
+  window.ScenePad = { S, send, receive, startDemo, connectMidi, requestMidi, VERSION: APP_VERSION,
+    getIO: () => ({ access, input, output, mode: S.mode }),
+    onRaw: fn => rawListeners.add(fn), offRaw: fn => rawListeners.delete(fn) };
   init();
 })();

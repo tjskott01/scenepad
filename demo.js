@@ -77,6 +77,18 @@ function DemoDevice(onMessage) {
         }
         break;
       }
+      case 0x1F: { // simulated bulk-read burst (shape per community RE; values are fake)
+        const id = from14(p[0], p[1]); if (!state.blocks[id]) { reply(0x64, [0x1F, 0x00]); break; }
+        const per = 50, vals = []; for (let i = 0; i < per * 4; i++) vals.push((i * 2731 + id * 97) % 65535);
+        const tri = v => [v & 0x7F, (v >> 7) & 0x7F, (v >> 14) & 0x03];
+        setTimeout(() => {
+          onMessage(build(0x74, [...lsb14(id), ...lsb14(per * 4), 0]));
+          onMessage(build(0x75, [0, 0, ...vals.slice(0, 128).flatMap(tri)]));
+          onMessage(build(0x75, [1, 0, ...vals.slice(128).flatMap(tri)]));
+          onMessage(build(0x76, []));
+        }, 15);
+        break;
+      }
       case CMD.FIRMWARE: reply(CMD.FIRMWARE, [32, 0, 0, 0, 0]); break;
     }
   };

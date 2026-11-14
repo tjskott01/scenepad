@@ -74,9 +74,31 @@
     <div class="row2"><button id="connectBtn" class="primary">Connect MIDI</button><button id="refreshBtn" class="chip">Refresh</button></div>
     <label class="check"><input type="checkbox" id="pollChk" checked> Follow the unit (poll preset/scene every second)</label>
     <label class="check"><input type="checkbox" id="wakeChk" checked> Keep screen awake</label>
+    <button id="openTest" class="chip">Diagnostics / Test screen</button>
     <p class="note" id="fwLine"></p>
     <details><summary>MIDI log</summary><pre id="log"></pre></details>
     <p class="note small">Independent fan-made controller. Not affiliated with or endorsed by Fractal Audio Systems. “Axe-Fx” is their trademark, used here only to describe compatibility.</p>
+  </div>
+</div>
+
+<!-- Diagnostics -->
+<div id="testScreen" class="overlay hidden" role="dialog" aria-label="Diagnostics">
+  <div class="sheet test">
+    <div class="sheetHead"><b>Diagnostics</b><span class="ver" id="tVer"></span><button class="chip" id="testClose">Close</button></div>
+    <p class="note">Plug in the Axe-Fx III, tap <b>Run All</b>, then <b>Copy Log</b> or <b>Share</b> and paste the text back. Tests 1–4 and 6 only read from the unit.</p>
+    <div class="tgrid">
+      <button class="primary" id="tRunAll">▶ Run All (read-only)</button>
+      <button class="chip" data-t="1">1 · Ports</button>
+      <button class="chip" data-t="2">2 · Queries</button>
+      <button class="chip" data-t="3">3 · Block probe</button>
+      <button class="chip" data-t="4">4 · Tuner</button>
+      <button class="chip" data-t="6">6 · Param read (exp.)</button>
+      <button class="chip" id="tSniff">● MIDI sniffer: OFF</button>
+      <button class="chip danger" data-t="5">5 · ⚠ Experimental: changes the unit</button>
+    </div>
+    <div class="tres" id="tRes"></div>
+    <div class="row3"><button class="primary" id="tCopy">Copy Log</button><button class="chip" id="tShare">Share</button><button class="chip" id="tClear">Clear</button></div>
+    <pre id="tLog" class="tlog"></pre>
   </div>
 </div>
 
@@ -84,5 +106,6 @@
 <script src="proto.js"></script>
 <script src="demo.js"></script>
 <script src="app.js"></script>
+<script src="diag.js"></script>
 </body>
 </html>
