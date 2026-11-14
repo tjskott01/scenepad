@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.0';
 (() => {
   const $ = id => document.getElementById(id);
   const hex = a => Array.from(a).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
@@ -180,20 +180,6 @@ const APP_VERSION = '1.3.1';
   }
   function setStatus(text, cls) { $('connText').textContent = text; $('dot').className = 'dot ' + (cls || ''); }
 
-  // ---------- Amp panel (read-only, fn 0x1F bulk read) ----------
-  const AMP_KNOBS = [['Gain', 1], ['Bass', 2], ['Mid', 3], ['Treble', 4], ['Master', 5]];
-  let ampId = P.ID.DISTORT1, ampBusy = false;
-  const ampName = v => (typeof AMP_TYPES !== 'undefined' && AMP_TYPES[v]) ? AMP_TYPES[v] : 'Type #' + v;
-  const knob = v => v == null || v > 65534 ? null : v / 65534 * 10;
-  function ampBtnState() {
-    const amps = (S.allBlocks || []).filter(b => b.id === P.ID.DISTORT1 || b.id === P.ID.DISTORT2);
-    $('ampBtn').classList.toggle('hidden', S.mode === 'off');
-    $('ampSel').innerHTML = '';
-    for (const id of (amps.length ? amps.map(b => b.id) : [P.ID.DISTORT1])) {
-      const o = document.createElement('option'); o.value = id; o.textContent = P.blockName(id); $('ampSel').appendChild(o);
-    }
-    if ([...$('ampSel').options].some(o => +o.value === ampId)) $('ampSel').value = ampId; else ampId = +$('ampSel').value;
-  }
   // Bulk read helper (shared with diagnostics). Resolves {bulk, frames, nack}.
   function readBulk(id, timeout = 2500) {
     return new Promise(resolve => {
@@ -205,70 +191,96 @@ const APP_VERSION = '1.3.1';
     });
   }
   // Demo mode edits the simulator freely; real hardware needs a test-7 pass recorded in MIDI mode.
-  const writeOK = () => S.mode === 'demo' ? { demo: true } : ((w => w && w.mode === 'midi' ? w : null)(store.get('writeOK', null)));
-  let amp = null;            // last read: {id, ch, stride, values, bypassed}
-  const ampOrig = {};        // `${id}:${ch}` -> {pid: wireValue} captured before the first edit
-  async function readAmp() {
+  // ---------- Block editor (bulk read per block; writes gated per block family by diagnostics) ----------
+  // Unlock records: 'writeOK' (Amp, test 7, kept for compatibility) and 'writeOKBlocks' {FAMILY: {...}} (test 8).
+  function blockUnlocked(base) {
+    if (S.mode === 'demo') return true;
+    if (base === 'DISTORT') { const w = store.get('writeOK', null); if (w && w.mode === 'midi') return true; }
+    const m = store.get('writeOKBlocks', {}); return !!(m[base] && m[base].mode === 'midi');
+  }
+  let edId = P.ID.DISTORT1, edBusy = false, ed = null; // ed = last read {id, def, ch, chans, stride, values, bypassed}
+  const edOrig = {};                                   // `${id}:${ch}` -> {pid: wire} before first edit
+  function editableBlocks() {
+    const present = (S.allBlocks || []).filter(b => blockDef(b.id));
+    if (!present.length && S.mode !== 'off') return [{ id: P.ID.DISTORT1 }];
+    return present.sort((x, y) => { const r = id => BLOCK_ORDER.indexOf(P.blockInfo(id).base) * 10 + P.blockInfo(id).inst; return r(x.id) - r(y.id); });
+  }
+  function ampBtnState() { // name kept: called from several places
+    $('ampBtn').classList.toggle('hidden', S.mode === 'off');
+    const list = editableBlocks();
+    if (!list.some(b => b.id === edId) && list.length) edId = list[0].id;
+    $('edTabs').innerHTML = '';
+    for (const b of list) {
+      const t = document.createElement('button'); t.className = 'chip tab' + (b.id === edId ? ' active' : '');
+      t.textContent = P.blockName(b.id) + (blockUnlocked(P.blockInfo(b.id).base) ? '' : ' 🔒');
+      t.onclick = () => { edId = b.id; ampBtnState(); readBlock(); };
+      $('edTabs').appendChild(t);
+    }
+  }
+  async function readBlock() {
     if (S.mode === 'off') return toast('Connect MIDI or start Demo first');
-    if (ampBusy) return; ampBusy = true; S.pausePoll = true;
+    if (edBusy) return; edBusy = true; S.pausePoll = true;
     $('ampStatus').textContent = 'Reading…';
-    send(P.msg.statusDump()); await new Promise(r => setTimeout(r, 120));
-    const { bulk, nack } = await readBulk(ampId);
-    ampBusy = false; S.pausePoll = false;
-    if (!bulk || !bulk.values.length || !Number.isInteger(bulk.stride)) {
-      amp = null; $('ampBody').innerHTML = '';
+    send(P.msg.statusDump()); await new Promise(r => setTimeout(r, 150));
+    const { bulk, nack } = await readBulk(edId);
+    edBusy = false; S.pausePoll = false;
+    const def = blockDef(edId), st = (S.allBlocks || []).find(b => b.id === edId);
+    const stride = bulk ? blockStride(bulk, st && st.channels) : null;
+    if (!bulk || !bulk.values.length || !stride || !def) {
+      ed = null; $('ampBody').innerHTML = '';
       $('ampStatus').textContent = nack ? 'The unit rejected the read (block not in this preset?).' : 'No reply from the unit.'; return;
     }
-    const st = (S.allBlocks || []).find(b => b.id === bulk.blockId);
-    amp = { id: bulk.blockId, ch: st ? st.channel : 0, chans: st && st.channels ? Math.min(4, st.channels) : 4, stride: bulk.stride, values: bulk.values, bypassed: st && st.bypassed };
-    renderAmp();
-    $('ampStatus').textContent = `Read ${new Date().toLocaleTimeString()} · ${bulk.values.length} values`;
+    ed = { id: bulk.blockId, def, ch: st ? st.channel : 0, chans: st && st.channels ? Math.min(4, st.channels) : 4, stride, values: bulk.values, bypassed: st && st.bypassed };
+    renderBlockEd();
+    $('ampStatus').textContent = `Read ${new Date().toLocaleTimeString()} · ${bulk.values.length} values · ${ed.chans} channel${ed.chans > 1 ? 's' : ''}`;
   }
-  function renderAmp() {
-    if (!amp) return;
-    const { ch, chans } = amp, val = (c, pid) => amp.values[c * amp.stride + pid];
-    const ok = writeOK(), key = `${amp.id}:${ch}`, edited = !!ampOrig[key];
+  function renderBlockEd() {
+    if (!ed) return;
+    const { def, ch, chans } = ed, val = (c, pid) => ed.values[c * ed.stride + pid];
+    const ok = blockUnlocked(def.base), key = `${ed.id}:${ch}`, edited = !!edOrig[key];
     $('ampMode').textContent = ok ? 'experimental editor' : 'read-only';
-    let html = `<div class="ampType"><small>${P.blockName(amp.id)} · Channel ${'ABCD'[ch]}</small><b>${ampName(val(ch, 0))}</b><span class="dim">type #${val(ch, 0)}${amp.bypassed ? ' · BYPASSED' : ''}</span></div>`;
-    html += ok ? `<div class="expBanner">EXPERIMENTAL editing · changes channel ${'ABCD'[ch]} live, not saved to the preset until you save on the unit</div>`
-               : `<div class="lockBanner">Editing locked. Run Diagnostics <b>test 7</b> once to verify writes on this unit.<button class="chip" id="ampGoTest">Open test 7</button></div>`;
+    const typeLines = def.types.map(t => `<span>${t.label}: <b>${typeName(t, val(ch, t.pid))}</b></span>`).join('');
+    let html = `<div class="ampType"><small>${P.blockName(ed.id)} · Channel ${'ABCD'[ch]}${ed.bypassed ? ' · BYPASSED' : ''}</small>${typeLines}<span class="dim small">Param map: ${def.confidence}</span></div>`;
+    html += ok ? `<div class="expBanner">EXPERIMENTAL editing · changes channel ${'ABCD'[ch]} live; save on the unit to keep it</div>`
+               : `<div class="lockBanner">Editing locked for ${def.title}. Run Diagnostics <b>${def.base === 'DISTORT' ? 'test 7' : 'test 8'}</b> and confirm this block.<button class="chip" id="ampGoTest">Open tests</button></div>`;
     html += '<div class="knobs">';
-    for (const [k, pid] of AMP_KNOBS) {
-      const x = knob(val(ch, pid));
-      html += `<div class="knob"><span class="kl">${k}</span><input type="range" min="0" max="10" step="0.01" value="${x == null ? 0 : x.toFixed(2)}" data-pid="${pid}" ${ok ? '' : 'disabled'}><span class="kv" id="kv${pid}">${x == null ? '–' : x.toFixed(2)}</span></div>`;
+    for (const [label, pid, kind, hint] of def.controls) {
+      const w = val(ch, pid), max = kind === 'knob' ? 10 : 100, x = w == null ? 0 : w / 65534 * max;
+      html += `<div class="knob"><span class="kl">${label}${hint ? `<em>${hint}</em>` : ''}</span><input type="range" min="0" max="${max}" step="${kind === 'knob' ? 0.01 : 0.1}" value="${x.toFixed(2)}" data-pid="${pid}" data-kind="${kind}" ${ok ? '' : 'disabled'}><span class="kv" id="kv${pid}">${fmtParam(kind, w)}</span></div>`;
     }
     html += '</div>';
     if (ok) html += `<div class="row2"><button class="chip" id="ampRestore" ${edited ? '' : 'disabled'}>↺ Restore original values</button></div>`;
     html += '<table class="chTable"><tr><th></th>' + [...Array(chans)].map((_, c) => `<th class="${c === ch ? 'cur' : ''}">${'ABCD'[c]}</th>`).join('') + '</tr>';
-    html += '<tr><td>Type</td>' + [...Array(chans)].map((_, c) => `<td class="${c === ch ? 'cur' : ''}">${ampName(val(c, 0))}</td>`).join('') + '</tr>';
-    for (const [k, pid] of AMP_KNOBS) html += `<tr><td>${k}</td>` + [...Array(chans)].map((_, c) => { const x = knob(val(c, pid)); return `<td class="${c === ch ? 'cur' : ''}">${x == null ? '–' : x.toFixed(2)}</td>`; }).join('') + '</tr>';
+    for (const t of def.types) html += `<tr><td>${t.label}</td>` + [...Array(chans)].map((_, c) => `<td class="${c === ch ? 'cur' : ''}">${typeName(t, val(c, t.pid))}</td>`).join('') + '</tr>';
+    for (const [label, pid, kind] of def.controls) html += `<tr><td>${label}</td>` + [...Array(chans)].map((_, c) => `<td class="${c === ch ? 'cur' : ''}">${fmtParam(kind, val(c, pid))}</td>`).join('') + '</tr>';
     html += '</table>';
+    if (def.controls.some(c => c[2] === 'pct')) html += '<p class="note small">% values are the position within each parameter\'s range; the unit shows real units (Hz, dB, ms). Grey hints are the catalog range.</p>';
     $('ampBody').innerHTML = html;
     const go = $('ampGoTest'); if (go) go.onclick = () => { $('ampPanel').classList.add('hidden'); window.ScenePadDiag && window.ScenePadDiag.open(); };
     $('ampBody').querySelectorAll('input[type=range]').forEach(inp => {
-      inp.addEventListener('input', () => onSlide(+inp.dataset.pid, +inp.value));
-      inp.addEventListener('change', () => { clearTimeout(rereadT); rereadT = setTimeout(readAmp, 500); });
+      inp.addEventListener('input', () => onSlide(+inp.dataset.pid, +inp.value / +inp.max, inp.dataset.kind));
+      inp.addEventListener('change', () => { clearTimeout(rereadT); rereadT = setTimeout(readBlock, 500); });
     });
-    const rb = $('ampRestore'); if (rb) rb.onclick = restoreAmp;
+    const rbtn = $('ampRestore'); if (rbtn) rbtn.onclick = restoreBlock;
   }
   let slideT = null, slidePending = null, rereadT = null, lastSlide = 0;
-  function onSlide(pid, v) {
-    if (!amp || !writeOK()) return;
-    const key = `${amp.id}:${amp.ch}`;
-    if (!ampOrig[key]) { ampOrig[key] = {}; for (const [, p] of AMP_KNOBS) ampOrig[key][p] = amp.values[amp.ch * amp.stride + p]; }
-    $('kv' + pid).textContent = v.toFixed(2);
-    slidePending = [pid, v];
-    const flush = () => { if (!slidePending) return; const [p, x] = slidePending; slidePending = null; lastSlide = performance.now(); send(P.setParamContinuous(amp.id, p, x / 10)); amp.values[amp.ch * amp.stride + p] = Math.round(x / 10 * 65534); };
+  function onSlide(pid, norm, kind) {
+    if (!ed || !blockUnlocked(ed.def.base)) return;
+    const key = `${ed.id}:${ed.ch}`;
+    if (!edOrig[key]) { edOrig[key] = {}; for (const [, p] of ed.def.controls) edOrig[key][p] = ed.values[ed.ch * ed.stride + p]; }
+    $('kv' + pid).textContent = fmtParam(kind, Math.round(norm * 65534));
+    slidePending = [ed.id, pid, norm];
+    const flush = () => { if (!slidePending) return; const [id, p, n] = slidePending; slidePending = null; lastSlide = performance.now(); send(P.setParamContinuous(id, p, n)); if (ed && ed.id === id) ed.values[ed.ch * ed.stride + p] = Math.round(n * 65534); };
     clearTimeout(slideT);
     if (performance.now() - lastSlide > 60) flush(); else slideT = setTimeout(flush, 60);
-    const rb = $('ampRestore'); if (rb) rb.disabled = false;
+    const rbtn = $('ampRestore'); if (rbtn) rbtn.disabled = false;
   }
-  async function restoreAmp() {
-    if (!amp) return; const key = `${amp.id}:${amp.ch}`, orig = ampOrig[key]; if (!orig) return;
-    for (const [p, w] of Object.entries(orig)) { send(P.setParamContinuous(amp.id, +p, w / 65534)); await new Promise(r => setTimeout(r, 30)); }
-    delete ampOrig[key];
+  async function restoreBlock() {
+    if (!ed) return; const key = `${ed.id}:${ed.ch}`, orig = edOrig[key]; if (!orig) return;
+    for (const [p, w] of Object.entries(orig)) { send(P.setParamContinuous(ed.id, +p, w / 65534)); await new Promise(r => setTimeout(r, 30)); }
+    delete edOrig[key];
     toast('Original values sent. Re-reading…');
-    setTimeout(readAmp, 400);
+    setTimeout(readBlock, 400);
   }
 
   // ---------- preset picker ----------
@@ -351,9 +363,8 @@ const APP_VERSION = '1.3.1';
     $('prevBtn').onclick = () => changePreset((S.preset ?? 1) - 1);
     $('nextBtn').onclick = () => changePreset((S.preset ?? -1) + 1);
     $('presetBox').onclick = openPicker;
-    $('ampBtn').onclick = () => { $('ampPanel').classList.remove('hidden'); ampBtnState(); readAmp(); };
-    $('ampRefresh').onclick = readAmp;
-    $('ampSel').onchange = () => { ampId = +$('ampSel').value; readAmp(); };
+    $('ampBtn').onclick = () => { $('ampPanel').classList.remove('hidden'); ampBtnState(); readBlock(); };
+    $('ampRefresh').onclick = readBlock;
     $('pgPrev').onclick = () => { page = Math.max(0, page - 1); renderPicker(true); };
     $('pgNext').onclick = () => { page = Math.min(Math.floor(1023 / PER), page + 1); renderPicker(true); };
     $('goBtn').onclick = () => { const v = $('presetInput').value; if (v !== '') { $('picker').classList.add('hidden'); changePreset(+v); } };
@@ -374,7 +385,9 @@ const APP_VERSION = '1.3.1';
   }
   window.ScenePad = { S, send, receive, startDemo, connectMidi, requestMidi, VERSION: APP_VERSION,
     getIO: () => ({ access, input, output, mode: S.mode }), readBulk, store,
-    setWriteOK: v => { store.set('writeOK', v); renderAmp(); },
+    setWriteOK: v => { store.set('writeOK', v); renderBlockEd(); ampBtnState(); },
+    setBlockWriteOK: (base, v) => { const m = store.get('writeOKBlocks', {}); if (v) m[base] = v; else delete m[base]; store.set('writeOKBlocks', m); renderBlockEd(); ampBtnState(); },
+    blockUnlocked,
     onRaw: fn => rawListeners.add(fn), offRaw: fn => rawListeners.delete(fn) };
   init();
 })();

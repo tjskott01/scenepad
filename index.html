@@ -16,7 +16,7 @@
   <header class="bar">
     <button id="connBtn" class="conn" aria-label="Connection settings"><span class="dot" id="dot"></span><span id="connText">Not connected</span></button>
     <div class="spacer"></div>
-    <button id="ampBtn" class="chip hidden">AMP</button>
+    <button id="ampBtn" class="chip hidden">EDIT</button>
     <button id="demoBtn" class="chip">Demo</button>
     <button id="fsBtn" class="chip icon" aria-label="Fullscreen">⛶</button>
   </header>
@@ -84,13 +84,14 @@
 </div>
 
 <!-- Amp panel (read-only) -->
-<div id="ampPanel" class="overlay hidden" role="dialog" aria-label="Amp">
+<div id="ampPanel" class="overlay hidden" role="dialog" aria-label="Block editor">
   <div class="sheet">
-    <div class="sheetHead"><b>Amp <span class="dim small" id="ampMode">read-only</span></b><button class="chip" data-close="ampPanel">Close</button></div>
-    <div class="row2"><select id="ampSel"></select><button id="ampRefresh" class="primary">Refresh</button></div>
+    <div class="sheetHead"><b>Blocks <span class="dim small" id="ampMode">read-only</span></b><button class="chip" data-close="ampPanel">Close</button></div>
+    <div class="edTabs" id="edTabs"></div>
+    <button id="ampRefresh" class="primary">Refresh from unit</button>
     <p class="note" id="ampStatus"></p>
     <div id="ampBody"></div>
-    <p class="note small">Values come from the unit's block read (shown on the 0–10 knob scale). Amp names come from a community list and may be off on some firmware. Edits change the live preset only; save on the unit to keep them.</p>
+    <p class="note small">Values come from the unit's block read. Model/type names come from a community list and may be off on some firmware; the number is always shown. Edits change the live preset only; save on the unit to keep them.</p>
   </div>
 </div>
 
@@ -109,6 +110,7 @@
       <button class="chip" id="tSniff">● MIDI sniffer: OFF</button>
       <button class="chip danger" data-t="5">5 · ⚠ Experimental: changes the unit</button>
       <button class="chip danger" data-t="7">7 · ⚠ Write test: Amp 1 Gain +0.1, then restore</button>
+      <button class="chip danger" data-t="8">8 · Block check: read Cab/Drive/Delay/Reverb, then optional write test per block</button>
     </div>
     <div class="tres" id="tRes"></div>
     <div class="row3"><button class="primary" id="tCopy">Copy Log</button><button class="chip" id="tShare">Share</button><button class="chip" id="tClear">Clear</button></div>
@@ -119,6 +121,8 @@
 <div id="toast" class="toast hidden"></div>
 <script src="proto.js"></script>
 <script src="amps.js"></script>
+<script src="rosters.js"></script>
+<script src="blocks.js"></script>
 <script src="demo.js"></script>
 <script src="app.js"></script>
 <script src="diag.js"></script>

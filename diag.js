@@ -11,7 +11,7 @@
   const results = {}; // test number -> {title, verdict, note}
   const TITLES = { 1: 'MIDI ports + SysEx permission', 2: 'Queries (fw, name, scene, scene names, tempo, status dump)',
     3: 'Block ID probe (bypass GET)', 4: 'Tuner on/listen 5 s/off', 5: 'EXPERIMENTAL write test (block + scene, restored)',
-    6: 'EXPERIMENTAL param read (fn 0x1F bulk read, Amp 1)', 7: 'WRITE test: Amp 1 Gain +0.1 then restore (gates the Amp editor)' };
+    6: 'EXPERIMENTAL param read (fn 0x1F bulk read, Amp 1)', 7: 'WRITE test: Amp 1 Gain +0.1 then restore (gates the Amp editor)', 8: 'Block check: Cab/Drive/Delay/Reverb read + per-block write test' };
   let busy = false;
 
   function log(s) { lines.push(`[${ts()}] ${s}`); render(); }
@@ -311,7 +311,69 @@
     verdict(7, pass ? 'pass' : 'fail', pass ? `write+restore verified (fw ${fwStr})` : (setOK ? 'restore mismatch' : 'write had no effect'));
   }
 
-  const TESTS = { 1: test1, 2: test2, 3: test3, 4: test4, 5: test5, 6: test6, 7: test7 };
+  // Test 8: read every editable block in the preset and print candidate values with names; then, per block the
+  // user confirms, nudge one param by 1% of its range, read back, restore. A pass unlocks that block family.
+  async function test8() {
+    if (!connected()) { verdict(8, 'fail', 'not connected'); return; }
+    verdict(8, 'running');
+    const fw = await request(P.msg.getFirmware(), isFn(0x08), 700, 'firmware');
+    const fwStr = fw && fw.m && fw.m.type === 'firmware' ? `${fw.m.major}.${String(fw.m.minor).padStart(2, '0')}` : '?';
+    const dump = await request(P.msg.statusDump(), isFn(0x13), 1200, 'status dump');
+    if (!(dump && dump.m && dump.m.type === 'dump')) { verdict(8, 'fail', 'no status dump'); return; }
+    const blocks = dump.m.blocks.filter(b => { const d = blockDef(b.id); return d && d.base !== 'DISTORT'; })
+      .sort((x, y) => BLOCK_ORDER.indexOf(P.blockInfo(x.id).base) - BLOCK_ORDER.indexOf(P.blockInfo(y.id).base));
+    if (!blocks.length) { verdict(8, 'info', 'no Cab/Drive/Delay/Reverb in this preset'); return; }
+    const reads = [];
+    for (const st of blocks) {
+      const def = blockDef(st.id), name = P.blockName(st.id);
+      log(`── ${name} (id ${st.id}) · status: ${st.bypassed ? 'BYPASSED' : 'ENGAGED'}, channel ${'ABCD'[st.channel]}, ${st.channels} channels`);
+      logRaw('TX', P.msg.bulkRead(st.id), 'bulk read');
+      const r = await SP.readBulk(st.id);
+      const stride = r.bulk ? blockStride(r.bulk, st.channels) : null;
+      log(`   ${r.frames.length} frames${r.nack ? ' (NACK)' : ''}; itemCount ${r.bulk ? r.bulk.itemCount : '-'}, stride ${stride}${r.bulk && st.channels && r.bulk.itemCount / st.channels !== stride ? ` (itemCount/${st.channels} channels would be ${r.bulk.itemCount / st.channels})` : ''}`);
+      if (!r.bulk || !stride) { log('   !! no usable read'); continue; }
+      const v = (c, pid) => r.bulk.values[c * stride + pid];
+      for (const t of def.types) log(`   ${t.label.padEnd(16)} pid ${String(t.pid).padStart(2)} = ${typeName(t, v(st.channel, t.pid))}   [A..D: ${[0, 1, 2, 3].map(c => v(c, t.pid)).join(', ')}]`);
+      const lines = [];
+      for (const [label, pid, kind, hint] of def.controls) {
+        const w = v(st.channel, pid);
+        const line = `${label} = ${fmtParam(kind, w)}`;
+        lines.push(line + (hint ? ` (unit range ${hint})` : ''));
+        log(`   ${label.padEnd(16)} pid ${String(pid).padStart(2)} = ${String(w).padStart(5)} → ${fmtParam(kind, w).padStart(6)}${hint ? '   catalog range ' + hint : ''}   [A..D: ${[0, 1, 2, 3].map(c => fmtParam(kind, v(c, pid))).join(' ')}]`);
+      }
+      reads.push({ st, def, name, stride, bulk: r.bulk, lines });
+    }
+    const results8 = [];
+    for (const rd of reads) {
+      const { st, def, name } = rd;
+      const tl = def.controls.find(c => c[1] === def.test);
+      const ask = `${name}, channel ${'ABCD'[st.channel]}: do these match the unit's screen?\n\n${rd.lines.join('\n')}\n\n(% = position within the range; Hz/dB/ms knobs won't read as the same number.)\n\nOK = they match → run a small WRITE test (${tl[0]} +1% of its range, then restored).\nCancel = skip this block.`;
+      if (!confirm(ask)) { log(`${name}: write test SKIPPED by user (values not confirmed).`); results8.push(`${def.title}: skipped`); continue; }
+      const idx = st.channel * rd.stride + def.test, orig = rd.bulk.values[idx];
+      let target = orig + 655; if (target > 65534) target = orig - 655;
+      log(`${name}: write test on ${tl[0]} (pid ${def.test}) original ${orig} → target ${target}`);
+      const setMsg = P.setParamContinuous(st.id, def.test, target / 65534);
+      logRaw('TX', setMsg, `SET ${tl[0]}`); SP.send(setMsg); await new Promise(r => setTimeout(r, 400));
+      const b1 = await SP.readBulk(st.id); const after = b1.bulk ? b1.bulk.values[idx] : null;
+      const TOL = 200;
+      const setOK = after != null && Math.abs(after - target) <= TOL;
+      log(`   after SET: ${after} → ${setOK ? 'MATCH' : 'NO MATCH'}`);
+      const rMsg = P.setParamContinuous(st.id, def.test, orig / 65534);
+      logRaw('TX', rMsg, `RESTORE ${tl[0]}`); SP.send(rMsg); await new Promise(r => setTimeout(r, 400));
+      const b2 = await SP.readBulk(st.id); const back = b2.bulk ? b2.bulk.values[idx] : null;
+      const restOK = back != null && Math.abs(back - orig) <= TOL;
+      log(`   after RESTORE: ${back} (original ${orig}) → ${restOK ? 'RESTORED' : 'NOT RESTORED'}${back != null && back !== orig ? ` (off by ${back - orig})` : ''}`);
+      if (!restOK) log(`!!! Please put ${name} ${tl[0]} back by hand (original was ${fmtParam(tl[2], orig)} of range) or reload the preset without saving.`);
+      const pass = setOK && restOK;
+      if (SP.getIO().mode === 'midi') SP.setBlockWriteOK(def.base, pass ? { fw: fwStr, at: new Date().toISOString(), app: SP.VERSION, mode: 'midi', block: st.id } : null);
+      log(`   ${def.title} editor ${pass ? 'UNLOCKED' : 'stays locked'}.`);
+      results8.push(`${def.title}: ${pass ? 'PASS' : 'FAIL'}`);
+    }
+    const anyFail = results8.some(x => x.endsWith('FAIL'));
+    verdict(8, anyFail ? 'fail' : (results8.some(x => x.endsWith('PASS')) ? 'pass' : 'info'), results8.join(', ') || 'read only');
+  }
+
+  const TESTS = { 1: test1, 2: test2, 3: test3, 4: test4, 5: test5, 6: test6, 7: test7, 8: test8 };
   async function run(nums) {
     if (busy) return; busy = true; SP.S.pausePoll = true;
     document.querySelectorAll('#testScreen [data-t], #tRunAll').forEach(b => b.disabled = true);
@@ -336,7 +398,7 @@
       `User agent: ${navigator.userAgent}`,
       `Screen: ${screen.width}x${screen.height} @${devicePixelRatio}  Secure: ${isSecureContext}  WebMIDI: ${!!navigator.requestMIDIAccess}`,
       `Mode: ${io.mode}  IN: ${io.input ? io.input.name : '-'}  OUT: ${io.output ? io.output.name : '-'}  PC channel: ${(+document.getElementById('chSel').value || 0) + 1}`,
-      `Write path: ${JSON.stringify(SP.store.get('writeOK', null))}`,
+      `Write path: amp=${JSON.stringify(SP.store.get('writeOK', null))} blocks=${JSON.stringify(SP.store.get('writeOKBlocks', {}))}`,
       `Summary: ${Object.entries(results).map(([n, r]) => `T${n}=${r.v.toUpperCase()}${r.note ? ' (' + r.note + ')' : ''}`).join('; ') || 'no tests run'}`,
       '────────────────────────────────────────',
     ].join('\n');

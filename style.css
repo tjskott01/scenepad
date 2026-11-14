@@ -121,3 +121,9 @@ pre.tlog{flex:1;min-height:220px;margin:0;font:600 12px/1.45 ui-monospace,Menlo,
 .expBanner{margin-top:10px;padding:10px;border-radius:10px;background:#3a2408;border:1px solid var(--acc);color:var(--acc2);font-weight:900;font-size:14px}
 .lockBanner{margin-top:10px;padding:10px;border-radius:10px;background:#20242b;border:1px dashed var(--line);font-weight:800;font-size:14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
 #ampRestore{flex:1}
+
+.edTabs{display:flex;flex-wrap:wrap;gap:6px}
+.chip.tab.active{background:var(--acc);border-color:var(--acc2);color:#140800}
+.ampType span{font-size:17px}.ampType b{font-size:inherit}
+.kl em{display:block;font-style:normal;font-size:11px;color:var(--dim);font-weight:700}
+.knob{grid-template-columns:96px 1fr 64px}

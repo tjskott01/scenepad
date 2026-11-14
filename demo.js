@@ -15,6 +15,10 @@ function DemoDevice(onMessage) {
     for (let i = 0; i < per * 4; i++) vals.push((i * 2731 + id * 97) % 65535);
     if (per === 135) [[148, 46267, 26214, 27852, 45415, 27721], [174, 50000, 30000, 25000, 47000, 26000], [149, 52000, 28000, 30000, 44000, 30000], [148, 40000, 32767, 32767, 32767, 20000]]
       .forEach((row, c) => row.forEach((v, k) => { vals[c * per + k] = v; }));
+    if (per !== 135) for (let c = 0; c < 4; c++) { // plausible small ordinals for type/model params (fake)
+      vals[c * per] = (id + c * 3) % 20; if (id >= 70 && id <= 73) vals[c * per + 1] = c % 8;
+      if (id === 62 || id === 63) { vals[c * per] = c % 6; vals[c * per + 4] = 100 + c; }
+    }
     return (state.bulk[id] = vals);
   }
   const PRESET_BLOCKS = [ID.COMP1, ID.FUZZ1, ID.DISTORT1, ID.CAB1, ID.CHORUS1, ID.DELAY1, ID.DELAY2,
