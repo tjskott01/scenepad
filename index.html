@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0d0f12">
+<meta name="description" content="Stage controller for the Axe-Fx III over Web MIDI">
+<title>ScenePad</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="bar">
+    <button id="connBtn" class="conn" aria-label="Connection settings"><span class="dot" id="dot"></span><span id="connText">Not connected</span></button>
+    <div class="spacer"></div>
+    <button id="demoBtn" class="chip">Demo</button>
+    <button id="fsBtn" class="chip icon" aria-label="Fullscreen">⛶</button>
+  </header>
+
+  <section class="preset">
+    <button id="prevBtn" class="nav" aria-label="Previous preset">◀</button>
+    <button id="presetBox" class="presetBox" aria-label="Choose preset">
+      <div class="pnum" id="presetNum">---</div>
+      <div class="pname" id="presetName">No device</div>
+      <div class="sname" id="sceneName">&nbsp;</div>
+    </button>
+    <button id="nextBtn" class="nav" aria-label="Next preset">▶</button>
+  </section>
+
+  <section class="scenes" id="scenes"></section>
+
+  <section class="blocks" id="blocks"></section>
+
+  <footer class="bottom">
+    <button id="tunerBtn" class="big">TUNER</button>
+    <div class="tempo">
+      <button id="tempoDown" class="tbtn" aria-label="Tempo down">−</button>
+      <button id="tapBtn" class="big tap"><span class="led" id="led"></span><span id="bpm">---</span><small>TAP</small></button>
+      <button id="tempoUp" class="tbtn" aria-label="Tempo up">+</button>
+    </div>
+  </footer>
+</div>
+
+<!-- Tuner overlay -->
+<div id="tuner" class="overlay hidden" role="dialog" aria-label="Tuner">
+  <div class="tunerTop"><span id="tString">String –</span><button id="tunerClose" class="chip">Close</button></div>
+  <div class="tNote" id="tNote">–</div>
+  <div class="meter"><div class="scale"></div><div class="needle" id="needle"></div></div>
+  <div class="tCents" id="tCents">waiting for tuner data…</div>
+  <div class="tHint" id="tHint">Tuner data is only pushed out of the MIDI OUT jack (Setup › MIDI/Remote › “Send Realtime Sysex” = ON). Over USB the tuner still turns on and off, but the display stays empty.</div>
+</div>
+
+<!-- Preset picker -->
+<div id="picker" class="overlay hidden" role="dialog" aria-label="Choose preset">
+  <div class="sheet">
+    <div class="sheetHead"><b>Go to preset</b><button class="chip" data-close="picker">Close</button></div>
+    <div class="goRow"><input id="presetInput" type="number" inputmode="numeric" min="0" max="1023" placeholder="0–1023"><button id="goBtn" class="primary">GO</button></div>
+    <div class="pageRow"><button id="pgPrev" class="chip">◀ Prev</button><span id="pgLabel"></span><button id="pgNext" class="chip">Next ▶</button></div>
+    <div class="plist" id="plist"></div>
+  </div>
+</div>
+
+<!-- Settings -->
+<div id="settings" class="overlay hidden" role="dialog" aria-label="Connection">
+  <div class="sheet">
+    <div class="sheetHead"><b>Connection</b><button class="chip" data-close="settings">Close</button></div>
+    <p id="midiSupport" class="note"></p>
+    <label>MIDI input (from Axe-Fx)<select id="inSel"></select></label>
+    <label>MIDI output (to Axe-Fx)<select id="outSel"></select></label>
+    <label>MIDI channel for Program Change<select id="chSel"></select></label>
+    <div class="row2"><button id="connectBtn" class="primary">Connect MIDI</button><button id="refreshBtn" class="chip">Refresh</button></div>
+    <label class="check"><input type="checkbox" id="pollChk" checked> Follow the unit (poll preset/scene every second)</label>
+    <label class="check"><input type="checkbox" id="wakeChk" checked> Keep screen awake</label>
+    <p class="note" id="fwLine"></p>
+    <details><summary>MIDI log</summary><pre id="log"></pre></details>
+    <p class="note small">Independent fan-made controller. Not affiliated with or endorsed by Fractal Audio Systems. “Axe-Fx” is their trademark, used here only to describe compatibility.</p>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="proto.js"></script>
+<script src="demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
