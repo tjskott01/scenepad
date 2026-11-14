@@ -282,7 +282,7 @@
     if (!b0) { verdict(7, 'fail', 'bulk read failed'); return; }
     const idx = ch * b0.stride + 1, orig = b0.values[idx];
     const disp = w => (w / 65534 * 10).toFixed(3);
-    let target = orig + 6553; if (target > 65534) target = orig - 6553;
+    let target = orig + 655; if (target > 65534) target = orig - 655; // 0.1 on the 0-10 knob = 655.34 wire units
     log(`Amp 1 channel ${'ABCD'[ch]} Gain original = ${orig} (${disp(orig)}); target = ${target} (${disp(target)})`);
     const echoes = []; const eh = d => { if (isFn(0x01)(d)) echoes.push(d); }; listeners.add(eh);
     const setMsg = P.setParamContinuous(58, 1, target / 65534);

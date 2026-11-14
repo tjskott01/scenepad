@@ -1,4 +1,4 @@
-const CACHE = 'scenepad-v4';
+const CACHE = 'scenepad-v5';
 const FILES = ['./', 'index.html', 'style.css', 'proto.js', 'amps.js', 'demo.js', 'app.js', 'diag.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))); self.skipWaiting(); });
